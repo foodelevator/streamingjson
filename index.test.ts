@@ -332,6 +332,40 @@ describe("raw unicode in strings", () => {
     test("combining characters", () => expectMatch('"e\u0301"'));
 });
 
+describe("whitespace", () => {
+    test("leading spaces", () => expectMatch("  42"));
+    test("trailing spaces", () => expectMatch("42  "));
+    test("leading and trailing spaces", () => expectMatch("  42  "));
+    test("leading newline", () => expectMatch("\n42"));
+    test("trailing newline", () => expectMatch("42\n"));
+    test("leading tab", () => expectMatch("\t42"));
+    test("trailing tab", () => expectMatch("42\t"));
+    test("carriage return", () => expectMatch("\r\n42\r\n"));
+    test("mixed whitespace", () => expectMatch(" \t\n\r 42 \t\n\r "));
+    test("spaces in array", () => expectMatch("[ 1 , 2 , 3 ]"));
+    test("newlines in array", () => expectMatch("[\n1,\n2,\n3\n]"));
+    test("spaces in object", () => expectMatch('{ "a" : 1 , "b" : 2 }'));
+    test("newlines in object", () => expectMatch('{\n"a"\n:\n1\n,\n"b"\n:\n2\n}'));
+    test("tabs in object", () => expectMatch('{\t"a"\t:\t1\t}'));
+    test("deeply nested with whitespace", () => expectMatch('{ "a" : [ 1 , { "b" : 2 } ] }'));
+    test("empty array with spaces", () => expectMatch("[  ]"));
+    test("empty object with spaces", () => expectMatch("{  }"));
+    test("only whitespace is invalid", () => expectMatch("   "));
+    test("whitespace around null", () => expectMatch("  null  "));
+    test("whitespace around true", () => expectMatch("  true  "));
+    test("whitespace around false", () => expectMatch("  false  "));
+    test("whitespace around string", () => expectMatch('  "hello"  '));
+    test("complex with whitespace", () => expectMatch(`
+        {
+            "users": [
+                { "name": "Alice", "age": 30 },
+                { "name": "Bob", "age": 25 }
+            ],
+            "count": 2
+        }
+    `));
+});
+
 describe("number edge cases", () => {
     test("negative zero equals zero", () => {
         const result = parseJson("-0");

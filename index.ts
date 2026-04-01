@@ -2,9 +2,16 @@ export class JsonParsingError extends Error {
 }
 
 export function parseJson(s: string): unknown {
+    s = skipWs(s);
     const [value, rest] = parse(s);
-    if (rest !== "") throw new JsonParsingError();
+    if (skipWs(rest) !== "") throw new JsonParsingError();
     return value;
+}
+
+function skipWs(s: string): string {
+    let i = 0;
+    while (s[i] === " " || s[i] === "\t" || s[i] === "\n" || s[i] === "\r") i++;
+    return i === 0 ? s : s.slice(i);
 }
 
 function parse(s: string): [unknown, string] {
@@ -42,12 +49,12 @@ function parseArray(s: string): [unknown[], string] {
 
     var result = [];
     while (true) {
-        s = s.slice(1);
+        s = skipWs(s.slice(1));
         if (result.length == 0 && s[0] == "]") return [result, s.slice(1)];
 
         const [value, rest] = parse(s);
         result.push(value);
-        s = rest;
+        s = skipWs(rest);
 
         if (s[0] == "]") return [result, s.slice(1)];
         if (s[0] != ",") throw new JsonParsingError();
@@ -128,24 +135,25 @@ function parseObject(s: string): [Record<string, unknown>, string] {
 
     const object: Record<string, unknown> = {};
     let foundEntry = false;
+    s = skipWs(s);
 
     while (true) {
         if (!foundEntry && s[0] == "}") return [object, s.slice(1)];
 
         const [key, rest] = parseString(s);
-        s = rest;
+        s = skipWs(rest);
 
         if (s[0] != ":") throw new JsonParsingError();
-        s = s.slice(1);
+        s = skipWs(s.slice(1));
 
         const [value, rest2] = parse(s);
-        s = rest2;
+        s = skipWs(rest2);
 
         if (key != "__proto__") object[key] = value;
 
         if (s[0] == "}") return [object, s.slice(1)];
         if (s[0] != ",") throw new JsonParsingError();
-        s = s.slice(1);
+        s = skipWs(s.slice(1));
         foundEntry = true;
     }
 }
