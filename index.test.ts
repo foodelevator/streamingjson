@@ -237,33 +237,15 @@ describe("edge cases", () => {
 });
 
 describe("__proto__ key", () => {
-    test("__proto__ key is excluded from result", () => {
-        const result = parseJson('{"__proto__":"bad","a":1}');
-        expect(result).toEqual({ a: 1 });
-        expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
-    });
-
-    test("__proto__ as the only key yields empty object", () => {
-        const result = parseJson('{"__proto__":"bad"}');
-        expect(result).toEqual({});
-        expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
-    });
-
-    test("__proto__ with nested object value", () => {
-        const result = parseJson('{"__proto__":{"polluted":true},"safe":1}');
-        expect(result).toEqual({ safe: 1 });
-        expect(Object.prototype.hasOwnProperty.call(result, "__proto__")).toBe(false);
-    });
-
-    test("__proto__ with array value", () => {
-        const result = parseJson('{"__proto__":[1,2,3],"a":"ok"}');
-        expect(result).toEqual({ a: "ok" });
-    });
-
-    test("nested object with __proto__", () => {
-        const result = parseJson('{"a":{"__proto__":"bad","b":1}}') as any;
-        expect(result.a).toEqual({ b: 1 });
-        expect(Object.prototype.hasOwnProperty.call(result.a, "__proto__")).toBe(false);
+    test("__proto__ key is excluded from result", () => expectMatch('{"__proto__":"bad","a":1}'));
+    test("__proto__ as the only key", () => expectMatch('{"__proto__":"bad"}'));
+    test("__proto__ with nested object value", () => expectMatch('{"__proto__":{"polluted":true},"safe":1}'));
+    test("__proto__ with array value", () => expectMatch('{"__proto__":[1,2,3],"a":"ok"}'));
+    test("nested object with __proto__", () => expectMatch('{"a":{"__proto__":"bad","b":1}}'));
+    test("__proto__ key doesn't cause prototype pollution", () => {
+        const result = parseJson('{"__proto__":{"hacked":true}}');
+        expect(Object.hasOwnProperty.call(result, "__proto__")).toBe(true);
+        expect(Object.getPrototypeOf(result).hacked).not.toBe(true);
     });
 });
 

@@ -149,7 +149,7 @@ function parseObject(s: string): [Record<string, unknown>, string] {
         const [value, rest2] = parse(s);
         s = skipWs(rest2);
 
-        if (key != "__proto__") object[key] = value;
+        Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
 
         if (s[0] == "}") return [object, s.slice(1)];
         if (s[0] != ",") throw new JsonParsingError();
