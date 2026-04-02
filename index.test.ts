@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseJson, JsonParsingError } from "./index";
+import { parseJson, JsonParsingError, input } from "./index";
 
 function expectMatch(input: string) {
     let ours: { value: unknown } | { error: unknown };
@@ -23,6 +23,76 @@ function expectMatch(input: string) {
 
     expect(ours.value).toEqual(theirs.value);
 }
+
+describe("input wrapper", () => {
+    test("basic", () => {
+        function* rawData() {
+            yield "hel";
+            yield "lo";
+            yield "!";
+        }
+
+        const f = input(rawData());
+        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+    });
+    test("peeking", () => {
+        function* rawData() {
+            yield "hel";
+            yield "lo";
+            yield "!";
+        }
+
+        const f = input(rawData());
+        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("peek")).toEqual({ char: "l", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("peek")).toEqual({ char: "", yield: true, eof: true });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+    });
+    test("empty chunks", () => {
+        function* rawData() {
+            yield "";
+            yield "";
+            yield "hel";
+            yield "lo";
+            yield "";
+            yield "";
+            yield "";
+            yield "";
+            yield "!";
+            yield "";
+            yield "";
+        }
+
+        const f = input(rawData());
+        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+    });
+});
 
 describe("null", () => {
     test("null", () => expectMatch("null"));
@@ -364,4 +434,19 @@ describe("number edge cases", () => {
 
     test("very long integer", () => expectMatch("12345678901234567890"));
     test("many decimal places", () => expectMatch("3.141592653589793238"));
+});
+
+describe("streaming", () => {
+    test("some object", () => {
+        const s = '{"name":"Alice","age":34,"active":true,"scores":[95,87,73,100],"address":{"street":"742 Elm St","city":"Portland","zip":"97201"},"tags":["admin","verified"],"lastLogin":"2026-03-15T08:30:00Z"}';
+        function* gen() {
+            let i = 0;
+            while (i < s.length) {
+                const j = Math.min(i + Math.ceil(Math.random() * 10), s.length);
+                yield s.slice(i, j);
+                i = j;
+            }
+        };
+        expect(parseJson(gen())).toEqual(JSON.parse(s));
+    });
 });

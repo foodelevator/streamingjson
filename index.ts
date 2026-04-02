@@ -1,63 +1,101 @@
 export class JsonParsingError extends Error {
 }
 
-export function parseJson(s: string): unknown {
-    s = skipWs(s);
-    const [value, rest] = parse(s);
-    if (skipWs(rest) !== "") throw new JsonParsingError();
+export function parseJson(s: string | Iterable<string>): unknown {
+    let inp;
+    if (typeof s === "string") {
+        inp = input([s]);
+    } else if (Symbol.iterator in s) {
+        inp = input(s);
+    } else {
+        throw new TypeError();
+    }
+    skipWs(inp);
+    const value = parse(inp);
+    skipWs(inp);
+    if (!inp("peek").eof) throw new JsonParsingError();
     return value;
 }
 
-function skipWs(s: string): string {
-    let i = 0;
-    while (s[i] === " " || s[i] === "\t" || s[i] === "\n" || s[i] === "\r") i++;
-    return i === 0 ? s : s.slice(i);
+type Input = (mode: "peek" | "eat") => { char: string; yield: boolean; eof: boolean };
+
+/**
+ * Returns a function which when called repeatedly returns succesive characters from {@link raw}. Its return values' fields are:
+ * - char: The current character. Is the empty string when `eof` is true.
+ * - yield: Is `true` iff this is the last character in a chunk produced by {@link raw}.
+ * - eof: Is `true` when {@link raw} is out of characters.
+ */
+export function input(raw: Iterable<string>): Input {
+    const iterator = raw[Symbol.iterator]();
+    let chunk = "";
+    let index = 0;
+
+    return (mode) => {
+        while (index >= chunk.length) {
+            const next = iterator.next();
+            if (next.done) return { char: "", yield: true, eof: true };
+            chunk = next.value;
+            index = 0;
+        }
+        const char = chunk[index]!;
+        const isLast = index === chunk.length - 1;
+        if (mode === "eat") index += 1;
+        return { char, yield: isLast, eof: false };
+    };
 }
 
-function parse(s: string): [unknown, string] {
-    switch (s[0]) {
+function skipWs(inp: Input): void {
+    while ([" ", "\t", "\n", "\r"].includes(inp("peek").char))
+        inp("eat");
+}
+
+function parse(inp: Input): unknown {
+    const r = inp("peek");
+    switch (r.char) {
         case "n":
-            return parseLiteral(s, "null", null);
+            return parseLiteral(inp, "null", null);
         case "t":
-            return parseLiteral(s, "true", true);
+            return parseLiteral(inp, "true", true);
         case "f":
-            return parseLiteral(s, "false", false);
+            return parseLiteral(inp, "false", false);
         case "[":
-            return parseArray(s);
+            return parseArray(inp);
         case '"':
-            return parseString(s);
+            return parseString(inp);
         case '{':
-            return parseObject(s);
+            return parseObject(inp);
         default:
-            if (s[0] && "0" <= s[0] && s[0] <= "9" || s[0] == "-")
-                return parseNumber(s);
-            else
-                throw new JsonParsingError();
+            if ("0" <= r.char && r.char <= "9" || r.char == "-")
+                return parseNumber(inp);
     }
+    throw new JsonParsingError();
 }
 
-function parseLiteral(s: string, literal: string, value: unknown): [unknown, string] {
-    if (s.startsWith(literal)) {
-        return [value, s.slice(literal.length)];
-    } else {
-        throw new JsonParsingError();
+function parseLiteral(inp: Input, literal: string, value: unknown): unknown {
+    for (let i = 0; i < literal.length; i++) {
+        const r = inp("eat");
+        if (r.char !== literal[i]) throw new JsonParsingError();
     }
+    return value;
 }
 
-function parseArray(s: string): [unknown[], string] {
-    if (s[0] != "[") throw new JsonParsingError();
+function parseArray(inp: Input): unknown[] {
+    if (inp("eat").char !== "[") throw new JsonParsingError();
 
-    var result = [];
+    const result: unknown[] = [];
+    skipWs(inp);
+    if (inp("peek").char === "]") { inp("eat"); return result; }
+
     while (true) {
-        s = skipWs(s.slice(1));
-        if (result.length == 0 && s[0] == "]") return [result, s.slice(1)];
-
-        const [value, rest] = parse(s);
+        const value = parse(inp);
         result.push(value);
-        s = skipWs(rest);
+        skipWs(inp);
 
-        if (s[0] == "]") return [result, s.slice(1)];
-        if (s[0] != ",") throw new JsonParsingError();
+        const r = inp("peek");
+        if (r.char === "]") { inp("eat"); return result; }
+        if (r.char !== ",") throw new JsonParsingError();
+        inp("eat");
+        skipWs(inp);
     }
 }
 
@@ -68,11 +106,15 @@ function hexDigit(c: string): number {
     throw new JsonParsingError();
 }
 
-function parseHex4(s: string, offset: number): number {
-    return (hexDigit(s[offset]!) << 12) | (hexDigit(s[offset + 1]!) << 8) | (hexDigit(s[offset + 2]!) << 4) | hexDigit(s[offset + 3]!);
+function parseHex4(inp: Input): number {
+    let result = 0;
+    for (let i = 0; i < 4; i++) {
+        result = (result << 4) | hexDigit(inp("eat").char);
+    }
+    return result;
 }
 
-const basicEscapes = {
+const basicEscapes: Record<string, string> = {
     '"': '"',
     "\\": "\\",
     "/": "/",
@@ -82,119 +124,140 @@ const basicEscapes = {
     "r": "\r",
     "t": "\t",
 };
-function parseString(s: string): [string, string] {
-    if (s[0] != '"') throw new JsonParsingError();
-    s = s.slice(1);
+
+/**
+ * Expects the initial `\` to have been eaten already
+ */
+function parseEscape(inp: Input): string {
+    const r = inp("eat");
+    if (r.char in basicEscapes) {
+        return basicEscapes[r.char]!;
+    }
+    if (r.char !== "u") throw new JsonParsingError();
+
+    // WTF-16 is stupid
+    const hex = parseHex4(inp);
+    if (!(0xD800 <= hex && hex < 0xDC00)) return String.fromCharCode(hex);
+    // High surrogate — check for low surrogate pair
+    if (inp("peek").char !== "\\") return String.fromCharCode(hex);
+    inp("eat"); // '\'
+    if (inp("peek").char !== "u") {
+        // Consumed '\' but next isn't 'u' — emit high surrogate, then handle escape
+        return String.fromCharCode(hex) + parseEscape(inp);
+    }
+    inp("eat"); // 'u'
+    const low = parseHex4(inp);
+    if (0xDC00 <= low && low < 0xE000)
+        return String.fromCodePoint(0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00));
+    // Not a valid low surrogate — emit both
+    return String.fromCharCode(hex) + String.fromCharCode(low);
+}
+
+function parseString(inp: Input): string {
+    if (inp("eat").char !== '"') throw new JsonParsingError();
 
     let result = "";
-    let start = 0;
     while (true) {
-        let i = start;
-        while (s[i] && s[i] != "\\" && s[i] != '"' && s.charCodeAt(i) >= 0x20) i++;
-        result += s.slice(start, i);
-        if (i >= s.length) throw new JsonParsingError();
-        if (s[i] == '"') return [result, s.slice(i + 1)];
-        if (s[i] != "\\")
-            // Raw control character. Must be escaped.
+        const r = inp("eat");
+        if (r.char === '"') return result;
+        if (r.char === "\\") {
+            result += parseEscape(inp);
+        } else if (r.char.charCodeAt(0) < 0x20) {
+            // Must be escaped to be valid in a string literal.
             throw new JsonParsingError();
-        if (s[i + 1]! in basicEscapes) {
-            result += basicEscapes[s[i + 1] as keyof typeof basicEscapes];
-            start = i + 2;
-        } else if (s[i + 1] == "u") {
-            if (i + 6 > s.length) throw new JsonParsingError();
-            const hex = parseHex4(s, i + 2);
-            const codePoint = hex;
-            // Handle surrogate pairs
-            if (codePoint >= 0xD800 && codePoint <= 0xDBFF) {
-                if (s[i + 6] == "\\" && s[i + 7] == "u" && i + 12 <= s.length) {
-                    const lowSurrogate = parseHex4(s, i + 8);
-                    if (lowSurrogate >= 0xDC00 && lowSurrogate <= 0xDFFF) {
-                        result += String.fromCodePoint(0x10000 + ((codePoint - 0xD800) << 10) + (lowSurrogate - 0xDC00));
-                        start = i + 12;
-                    } else {
-                        result += String.fromCharCode(codePoint);
-                        start = i + 6;
-                    }
-                } else {
-                    result += String.fromCharCode(codePoint);
-                    start = i + 6;
-                }
-            } else {
-                result += String.fromCharCode(codePoint);
-                start = i + 6;
-            }
+        } else if (r.eof) {
+            throw new JsonParsingError();
         } else {
-            throw new JsonParsingError();
+            result += r.char;
         }
     }
 }
 
-function parseObject(s: string): [Record<string, unknown>, string] {
-    if (s[0] != "{") throw new JsonParsingError();
-    s = s.slice(1);
+function parseObject(inp: Input): Record<string, unknown> {
+    if (inp("eat").char !== "{") throw new JsonParsingError();
 
     const object: Record<string, unknown> = {};
-    let foundEntry = false;
-    s = skipWs(s);
+    skipWs(inp);
+    if (inp("peek").char === "}") { inp("eat"); return object; }
 
     while (true) {
-        if (!foundEntry && s[0] == "}") return [object, s.slice(1)];
+        const key = parseString(inp);
+        skipWs(inp);
 
-        const [key, rest] = parseString(s);
-        s = skipWs(rest);
+        if (inp("eat").char !== ":") throw new JsonParsingError();
+        skipWs(inp);
 
-        if (s[0] != ":") throw new JsonParsingError();
-        s = skipWs(s.slice(1));
-
-        const [value, rest2] = parse(s);
-        s = skipWs(rest2);
+        const value = parse(inp);
+        skipWs(inp);
 
         Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
 
-        if (s[0] == "}") return [object, s.slice(1)];
-        if (s[0] != ",") throw new JsonParsingError();
-        s = skipWs(s.slice(1));
-        foundEntry = true;
+        const r = inp("peek");
+        if (r.char === "}") { inp("eat"); return object; }
+        if (r.char !== ",") throw new JsonParsingError();
+        inp("eat");
+        skipWs(inp);
     }
 }
 
-function parseNumber(s: string): [number, string] {
-    let i = 0;
-    if (s[i] == "-") {
-        i++;
+function parseNumber(inp: Input): number {
+    let numStr = "";
+
+    if (inp("peek").char === "-") {
+        numStr += "-";
+        inp("eat");
     }
+
     let foundDigit = false;
-    while (s[i] && "0" <= s[i]! && s[i]! <= "9") {
-        i++;
+    while (true) {
+        const r = inp("peek");
+        if (r.char < "0" || r.char > "9") break;
+        numStr += r.char;
+        inp("eat");
         foundDigit = true;
     }
     if (!foundDigit) throw new JsonParsingError();
+
     // Disallow leading zeros for non-zero numbers
-    const intStart = s[0] == "-" ? 1 : 0;
-    if (i - intStart > 1 && s[intStart] == "0") throw new JsonParsingError();
-    if (s[i] == ".") {
-        i++;
+    const intStart = numStr[0] === "-" ? 1 : 0;
+    if (numStr.length - intStart > 1 && numStr[intStart] === "0") throw new JsonParsingError();
+
+    if (inp("peek").char === ".") {
+        numStr += ".";
+        inp("eat");
 
         let foundDigit = false;
-        while (s[i] && "0" <= s[i]! && s[i]! <= "9") {
-            i++;
-            foundDigit = true;
-        }
-        if (!foundDigit) throw new JsonParsingError();
-    }
-    if (s[i] == "e" || s[i] == "E") {
-        i++;
-        if (s[i] == "-" || s[i] == "+") {
-            i++;
-        }
-        let foundDigit = false;
-        while (s[i] && "0" <= s[i]! && s[i]! <= "9") {
-            i++;
+        while (true) {
+            const r = inp("peek");
+            if (r.char < "0" || r.char > "9") break;
+            numStr += r.char;
+            inp("eat");
             foundDigit = true;
         }
         if (!foundDigit) throw new JsonParsingError();
     }
 
-    const [result, rest] = [s.slice(0, i), s.slice(i)];
-    return [Number(result), rest];
+    let r = inp("peek");
+    if (["e", "E"].includes(r.char)) {
+        numStr += r.char;
+        inp("eat");
+
+        r = inp("peek");
+        if (["-", "+"].includes(r.char)) {
+            numStr += r.char;
+            inp("eat");
+        }
+
+        let foundDigit = false;
+        while (true) {
+            r = inp("peek");
+            if (r.char < "0" || r.char > "9") break;
+            numStr += r.char;
+            inp("eat");
+            foundDigit = true;
+        }
+        if (!foundDigit) throw new JsonParsingError();
+    }
+
+    return Number(numStr);
 }

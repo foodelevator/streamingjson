@@ -2,6 +2,9 @@
   "name": "streamingjson",
   "module": "index.ts",
   "type": "module",
+  "exports": {
+    ".": "./exports.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
