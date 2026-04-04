@@ -3,21 +3,27 @@ import { parseJson, JsonParsingError, input } from "./index";
 import fc from "fast-check";
 
 /** Drain a generator, collecting every yielded value and the final return. */
-function collectYieldsAndReturn(gen: Generator<unknown, unknown>) {
+async function collectYieldsAndReturn(gen: AsyncGenerator<unknown, unknown>) {
     const yields: unknown[] = [];
     let next;
-    for (next = gen.next(); !next.done; next = gen.next()) {
+    for (next = await gen.next(); !next.done; next = await gen.next()) {
         yields.push(next.value);
     }
     return { yields, final: next.value };
 }
 
-function expectMatch(input: string) {
+function parseJsonString(input: string) {
+    return parseJson(async function*() { yield input; }());
+}
+
+async function expectMatch(input: string) {
     let ours: { value: unknown } | { error: unknown };
     let theirs: { value: unknown } | { error: unknown };
 
+
+
     try {
-        ours = { value: collectYieldsAndReturn(parseJson(input)).final };
+        ours = { value: (await collectYieldsAndReturn(parseJsonString(input))).final };
     } catch (e) {
         ours = { error: e };
     }
@@ -36,50 +42,50 @@ function expectMatch(input: string) {
 }
 
 describe("input wrapper", () => {
-    test("basic", () => {
-        function* rawData() {
+    test("basic", async () => {
+        async function* rawData() {
             yield "hel";
             yield "lo";
             yield "!";
         }
 
         const f = input(rawData());
-        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
     });
-    test("peeking", () => {
-        function* rawData() {
+    test("peeking", async () => {
+        async function* rawData() {
             yield "hel";
             yield "lo";
             yield "!";
         }
 
         const f = input(rawData());
-        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("peek")).toEqual({ char: "l", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("peek")).toEqual({ char: "", yield: true, eof: true });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("peek")).toEqual({ char: "l", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("peek")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
     });
-    test("empty chunks", () => {
-        function* rawData() {
+    test("empty chunks", async () => {
+        async function* rawData() {
             yield "";
             yield "";
             yield "hel";
@@ -94,14 +100,14 @@ describe("input wrapper", () => {
         }
 
         const f = input(rawData());
-        expect(f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
+        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
     });
 });
 
@@ -323,8 +329,8 @@ describe("__proto__ key", () => {
     test("__proto__ with nested object value", () => expectMatch('{"__proto__":{"polluted":true},"safe":1}'));
     test("__proto__ with array value", () => expectMatch('{"__proto__":[1,2,3],"a":"ok"}'));
     test("nested object with __proto__", () => expectMatch('{"a":{"__proto__":"bad","b":1}}'));
-    test("__proto__ key doesn't cause prototype pollution", () => {
-        const { final } = collectYieldsAndReturn(parseJson('{"__proto__":{"hacked":true}}'));
+    test("__proto__ key doesn't cause prototype pollution", async () => {
+        const { final } = await collectYieldsAndReturn(parseJson(async function*() { yield '{"__proto__":{"hacked":true}}' }()));
         expect(Object.hasOwnProperty.call(final, "__proto__")).toBe(true);
         expect(Object.getPrototypeOf(final).hacked).not.toBe(true);
     });
@@ -351,27 +357,27 @@ describe("raw control characters in strings", () => {
 
 describe("JsonParsingError identity", () => {
     test("throws JsonParsingError for invalid input", () => {
-        expect(() => collectYieldsAndReturn(parseJson("")).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString(""))).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for trailing content", () => {
-        expect(() => collectYieldsAndReturn(parseJson("truetrue")).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString("truetrue"))).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for unterminated string", () => {
-        expect(() => collectYieldsAndReturn(parseJson('"hello')).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString('"hello'))).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for invalid number", () => {
-        expect(() => collectYieldsAndReturn(parseJson("1e")).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString("1e"))).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing bracket", () => {
-        expect(() => collectYieldsAndReturn(parseJson("[1,2")).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString("[1,2"))).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing brace", () => {
-        expect(() => collectYieldsAndReturn(parseJson('{"a":1')).final).toThrow(JsonParsingError);
+        expect(async () => (await collectYieldsAndReturn(parseJsonString('{"a":1'))).final).toThrow(JsonParsingError);
     });
 });
 
@@ -430,8 +436,8 @@ describe("whitespace", () => {
 });
 
 describe("number edge cases", () => {
-    test("negative zero equals zero", () => {
-        const result = collectYieldsAndReturn(parseJson("-0")).final;
+    test("negative zero equals zero", async () => {
+        const result = (await collectYieldsAndReturn(parseJsonString("-0"))).final;
         expect(Object.is(result, -0)).toBe(true);
     });
 
@@ -448,9 +454,9 @@ describe("number edge cases", () => {
 });
 
 describe("streaming", () => {
-    test("some object", () => {
+    test("some object", async () => {
         const s = '{"name":"Alice","age":34,"active":true,"scores":[95,87,73,100],"address":{"street":"742 Elm St","city":"Portland","zip":"97201"},"tags":["admin","verified"],"lastLogin":"2026-03-15T08:30:00Z"}';
-        function* gen() {
+        async function* gen() {
             let i = 0;
             while (i < s.length) {
                 const j = Math.min(i + Math.ceil(Math.random() * 10), s.length);
@@ -458,12 +464,12 @@ describe("streaming", () => {
                 i = j;
             }
         };
-        expect(collectYieldsAndReturn(parseJson(gen())).final).toEqual(JSON.parse(s));
+        expect((await collectYieldsAndReturn(parseJson(gen()))).final).toEqual(JSON.parse(s));
     });
 });
 
 /** Produce a generator that yields `s` split at the given cut points. */
-function* chunked(s: string, cuts: number[]): Generator<string> {
+async function* chunked(s: string, cuts: number[]): AsyncGenerator<string> {
     const sorted = [...new Set(cuts)].sort((a, b) => a - b).filter(c => c > 0 && c < s.length);
     let prev = 0;
     for (const c of sorted) {
@@ -482,7 +488,7 @@ function cutPointsArb(len: number) {
 /**
  * Like chunked(), but also splices in empty strings at random positions.
  */
-function* chunkedWithEmpties(s: string, cuts: number[], emptyPositions: number[]): Generator<string> {
+async function* chunkedWithEmpties(s: string, cuts: number[], emptyPositions: number[]): AsyncGenerator<string> {
     const chunks: string[] = [];
     const sorted = [...new Set(cuts)].sort((a, b) => a - b).filter(c => c > 0 && c < s.length);
     let prev = 0;
@@ -516,10 +522,10 @@ function structuralType(v: unknown) {
 
 describe("property tests", () => {
     test("chunking independence of final value", () => {
-        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), (value, cuts, empties) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), async (value, cuts, empties) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { final } = collectYieldsAndReturn(
+            const { final } = await collectYieldsAndReturn(
                 parseJson(chunkedWithEmpties(s, realCuts, empties)),
             );
             expect(final).toEqual(JSON.parse(s));
@@ -527,10 +533,10 @@ describe("property tests", () => {
     });
 
     test("type consistency of yields", () => {
-        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields, final } = collectYieldsAndReturn(
+            const { yields, final } = await collectYieldsAndReturn(
                 parseJson(chunked(s, realCuts)),
             );
             const expected = structuralType(final);
@@ -541,17 +547,16 @@ describe("property tests", () => {
     });
 
     test("immutability of yields", () => {
-        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
             const gen = parseJson(chunked(s, realCuts));
             const snapshots: unknown[] = [];
             const originals: unknown[] = [];
-            let next = gen.next();
-            while (!next.done) {
+            let next;
+            for (next = await gen.next(); !next.done; next = await gen.next()) {
                 originals.push(next.value);
                 snapshots.push(structuredClone(next.value));
-                next = gen.next();
             }
             // After generator completes, no yielded value should have been mutated
             for (let i = 0; i < originals.length; i++) {
@@ -561,13 +566,13 @@ describe("property tests", () => {
     });
 
     test("monotonic array growth", () => {
-        fc.assert(fc.property(
+        fc.assert(fc.asyncProperty(
             fc.array(fc.jsonValue(), { minLength: 0, maxLength: 10 }),
             cutPointsArb(500),
-            (arr, cuts) => {
+            async (arr, cuts) => {
                 const s = JSON.stringify(arr);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = collectYieldsAndReturn(
+                const { yields } = await collectYieldsAndReturn(
                     parseJson(chunked(s, realCuts)),
                 );
                 for (let i = 1; i < yields.length; i++) {
@@ -582,13 +587,13 @@ describe("property tests", () => {
     });
 
     test("monotonic object key growth", () => {
-        fc.assert(fc.property(
+        fc.assert(fc.asyncProperty(
             fc.dictionary(fc.string(), fc.jsonValue(), { minKeys: 0, maxKeys: 8 }),
             cutPointsArb(500),
-            (obj, cuts) => {
+            async (obj, cuts) => {
                 const s = JSON.stringify(obj);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = collectYieldsAndReturn(
+                const { yields } = await collectYieldsAndReturn(
                     parseJson(chunked(s, realCuts)),
                 );
                 for (let i = 1; i < yields.length; i++) {
@@ -605,10 +610,10 @@ describe("property tests", () => {
     });
 
     test("string prefix property", () => {
-        fc.assert(fc.property(fc.string(), cutPointsArb(500), (str, cuts) => {
+        fc.assert(fc.asyncProperty(fc.string(), cutPointsArb(500), async (str, cuts) => {
             const s = JSON.stringify(str);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields, final } = collectYieldsAndReturn(
+            const { yields, final } = await collectYieldsAndReturn(
                 parseJson(chunked(s, realCuts)),
             );
             // Each yield is a prefix of the next
@@ -623,12 +628,12 @@ describe("property tests", () => {
     });
 
     test("multi-chunk input produces at least one yield", () => {
-        fc.assert(fc.property(fc.jsonValue(), (value) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), async (value) => {
             const s = JSON.stringify(value);
             if (s.length < 2) return; // can't split a 1-char string into 2 non-empty chunks
             // Split at the midpoint to guarantee 2 non-empty chunks
             const mid = Math.floor(s.length / 2);
-            const { yields } = collectYieldsAndReturn(
+            const { yields } = await collectYieldsAndReturn(
                 parseJson(chunked(s, [mid])),
             );
             expect(yields.length).toBeGreaterThanOrEqual(1);
@@ -636,10 +641,10 @@ describe("property tests", () => {
     });
 
     test("yields are JSON-serializable", () => {
-        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields } = collectYieldsAndReturn(
+            const { yields } = await collectYieldsAndReturn(
                 parseJson(chunked(s, realCuts)),
             );
             for (const y of yields) {
@@ -650,10 +655,10 @@ describe("property tests", () => {
     });
 
     test("no undefined yields for JSON.stringify output", () => {
-        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), (value, cuts, empties) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), async (value, cuts, empties) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields } = collectYieldsAndReturn(
+            const { yields } = await collectYieldsAndReturn(
                 parseJson(chunkedWithEmpties(s, realCuts, empties)),
             );
             for (const y of yields) {
@@ -666,11 +671,11 @@ describe("property tests", () => {
         const wsChar = fc.constantFrom(" ", "\t", "\n", "\r");
         const wsPadding = fc.array(wsChar, { minLength: 0, maxLength: 10 }).map(chars => chars.join(""));
 
-        fc.assert(fc.property(fc.jsonValue(), wsPadding, wsPadding, cutPointsArb(200), (value, leading, trailing, cuts) => {
+        fc.assert(fc.asyncProperty(fc.jsonValue(), wsPadding, wsPadding, cutPointsArb(200), async (value, leading, trailing, cuts) => {
             const core = JSON.stringify(value);
             const s = leading + core + trailing;
             const realCuts = cuts.filter(c => c < s.length);
-            const { final } = collectYieldsAndReturn(
+            const { final } = await collectYieldsAndReturn(
                 parseJson(chunked(s, realCuts)),
             );
             // Compare against JSON.parse to account for round-trip lossy
@@ -680,14 +685,14 @@ describe("property tests", () => {
     });
 
     test("number finiteness", () => {
-        fc.assert(fc.property(
+        fc.assert(fc.asyncProperty(
             fc.double({ noNaN: true, noDefaultInfinity: true }),
             cutPointsArb(50),
-            (num, cuts) => {
+            async (num, cuts) => {
                 const s = JSON.stringify(num);
                 if (s === "null") return; // skip edge cases like JSON.stringify(NaN) → "null"
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = collectYieldsAndReturn(
+                const { yields } = await collectYieldsAndReturn(
                     parseJson(chunked(s, realCuts)),
                 );
                 for (const y of yields) {
@@ -700,13 +705,13 @@ describe("property tests", () => {
     });
 
     test("array completed-elements prefix", () => {
-        fc.assert(fc.property(
+        fc.assert(fc.asyncProperty(
             fc.array(fc.jsonValue(), { minLength: 1, maxLength: 8 }),
             cutPointsArb(500),
-            (arr, cuts) => {
+            async (arr, cuts) => {
                 const s = JSON.stringify(arr);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields, final } = collectYieldsAndReturn(
+                const { yields, final } = await collectYieldsAndReturn(
                     parseJson(chunked(s, realCuts)),
                 );
                 const finalArr = final as unknown[];
@@ -727,13 +732,13 @@ describe("property tests", () => {
         const alphaKey = fc.string({ minLength: 1, maxLength: 6 }).filter(s => !/^[0-9]+$/.test(s));
         const objArb = fc.dictionary(alphaKey, fc.jsonValue(), { minKeys: 1, maxKeys: 8 });
 
-        fc.assert(fc.property(
+        fc.assert(fc.asyncProperty(
             objArb,
             cutPointsArb(500),
-            (obj, cuts) => {
+            async (obj, cuts) => {
                 const s = JSON.stringify(obj);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields, final } = collectYieldsAndReturn(
+                const { yields, final } = await collectYieldsAndReturn(
                     parseJson(chunked(s, realCuts)),
                 );
                 const finalObj = final as Record<string, unknown>;
