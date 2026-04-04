@@ -1,10 +1,15 @@
 import { describe, test, expect } from "bun:test";
 import { parseJson, JsonParsingError, input } from "./index";
+import fc from "fast-check";
 
-function getFinalValue(gen: Generator<unknown, unknown>): unknown {
-    let value;
-    while (!(value = gen.next()).done);
-    return value.value;
+/** Drain a generator, collecting every yielded value and the final return. */
+function collectYieldsAndReturn(gen: Generator<unknown, unknown>) {
+    const yields: unknown[] = [];
+    let next;
+    for (next = gen.next(); !next.done; next = gen.next()) {
+        yields.push(next.value);
+    }
+    return { yields, final: next.value };
 }
 
 function expectMatch(input: string) {
@@ -12,7 +17,7 @@ function expectMatch(input: string) {
     let theirs: { value: unknown } | { error: unknown };
 
     try {
-        ours = { value: getFinalValue(parseJson(input)) };
+        ours = { value: collectYieldsAndReturn(parseJson(input)).final };
     } catch (e) {
         ours = { error: e };
     }
@@ -319,9 +324,9 @@ describe("__proto__ key", () => {
     test("__proto__ with array value", () => expectMatch('{"__proto__":[1,2,3],"a":"ok"}'));
     test("nested object with __proto__", () => expectMatch('{"a":{"__proto__":"bad","b":1}}'));
     test("__proto__ key doesn't cause prototype pollution", () => {
-        const result = getFinalValue(parseJson('{"__proto__":{"hacked":true}}'));
-        expect(Object.hasOwnProperty.call(result, "__proto__")).toBe(true);
-        expect(Object.getPrototypeOf(result).hacked).not.toBe(true);
+        const { final } = collectYieldsAndReturn(parseJson('{"__proto__":{"hacked":true}}'));
+        expect(Object.hasOwnProperty.call(final, "__proto__")).toBe(true);
+        expect(Object.getPrototypeOf(final).hacked).not.toBe(true);
     });
 });
 
@@ -346,27 +351,27 @@ describe("raw control characters in strings", () => {
 
 describe("JsonParsingError identity", () => {
     test("throws JsonParsingError for invalid input", () => {
-        expect(() => getFinalValue(parseJson(""))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson("")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for trailing content", () => {
-        expect(() => getFinalValue(parseJson("truetrue"))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson("truetrue")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for unterminated string", () => {
-        expect(() => getFinalValue(parseJson('"hello'))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson('"hello')).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for invalid number", () => {
-        expect(() => getFinalValue(parseJson("1e"))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson("1e")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing bracket", () => {
-        expect(() => getFinalValue(parseJson("[1,2"))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson("[1,2")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing brace", () => {
-        expect(() => getFinalValue(parseJson('{"a":1'))).toThrow(JsonParsingError);
+        expect(() => collectYieldsAndReturn(parseJson('{"a":1')).final).toThrow(JsonParsingError);
     });
 });
 
@@ -426,7 +431,7 @@ describe("whitespace", () => {
 
 describe("number edge cases", () => {
     test("negative zero equals zero", () => {
-        const result = getFinalValue(parseJson("-0"));
+        const result = collectYieldsAndReturn(parseJson("-0")).final;
         expect(Object.is(result, -0)).toBe(true);
     });
 
@@ -453,6 +458,298 @@ describe("streaming", () => {
                 i = j;
             }
         };
-        expect(getFinalValue(parseJson(gen()))).toEqual(JSON.parse(s));
+        expect(collectYieldsAndReturn(parseJson(gen())).final).toEqual(JSON.parse(s));
+    });
+});
+
+/** Produce a generator that yields `s` split at the given cut points. */
+function* chunked(s: string, cuts: number[]): Generator<string> {
+    const sorted = [...new Set(cuts)].sort((a, b) => a - b).filter(c => c > 0 && c < s.length);
+    let prev = 0;
+    for (const c of sorted) {
+        yield s.slice(prev, c);
+        prev = c;
+    }
+    yield s.slice(prev);
+}
+
+/** Arbitrary for an array of cut points within a string of length `len`. */
+function cutPointsArb(len: number) {
+    if (len <= 1) return fc.constant([] as number[]);
+    return fc.array(fc.integer({ min: 1, max: len - 1 }), { minLength: 1, maxLength: Math.min(len, 20) });
+}
+
+/**
+ * Like chunked(), but also splices in empty strings at random positions.
+ */
+function* chunkedWithEmpties(s: string, cuts: number[], emptyPositions: number[]): Generator<string> {
+    const chunks: string[] = [];
+    const sorted = [...new Set(cuts)].sort((a, b) => a - b).filter(c => c > 0 && c < s.length);
+    let prev = 0;
+    for (const c of sorted) {
+        chunks.push(s.slice(prev, c));
+        prev = c;
+    }
+    chunks.push(s.slice(prev));
+    // Insert empty strings at specified positions (high to low to keep indices valid)
+    for (const pos of [...emptyPositions].sort((a, b) => b - a)) {
+        const clamped = Math.min(pos, chunks.length);
+        chunks.splice(clamped, 0, "");
+    }
+    yield* chunks;
+}
+
+/** Arbitrary for positions to insert empty chunks. */
+function emptyPosArb(maxLen: number) {
+    return fc.array(fc.integer({ min: 0, max: maxLen + 5 }), { minLength: 0, maxLength: 5 });
+}
+
+/**
+ * Return the structural type tag for a JSON value so we can assert
+ * type consistency across yields.
+ */
+function structuralType(v: unknown) {
+    if (v === null) return "null";
+    if (Array.isArray(v)) return "array";
+    return typeof v; // "object" | "string" | "number" | "boolean"
+}
+
+describe("property tests", () => {
+    test("chunking independence of final value", () => {
+        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), (value, cuts, empties) => {
+            const s = JSON.stringify(value);
+            const realCuts = cuts.filter(c => c < s.length);
+            const { final } = collectYieldsAndReturn(
+                parseJson(chunkedWithEmpties(s, realCuts, empties)),
+            );
+            expect(final).toEqual(JSON.parse(s));
+        }));
+    });
+
+    test("type consistency of yields", () => {
+        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+            const s = JSON.stringify(value);
+            const realCuts = cuts.filter(c => c < s.length);
+            const { yields, final } = collectYieldsAndReturn(
+                parseJson(chunked(s, realCuts)),
+            );
+            const expected = structuralType(final);
+            for (const y of yields) {
+                expect(structuralType(y)).toBe(expected);
+            }
+        }));
+    });
+
+    test("immutability of yields", () => {
+        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+            const s = JSON.stringify(value);
+            const realCuts = cuts.filter(c => c < s.length);
+            const gen = parseJson(chunked(s, realCuts));
+            const snapshots: unknown[] = [];
+            const originals: unknown[] = [];
+            let next = gen.next();
+            while (!next.done) {
+                originals.push(next.value);
+                snapshots.push(structuredClone(next.value));
+                next = gen.next();
+            }
+            // After generator completes, no yielded value should have been mutated
+            for (let i = 0; i < originals.length; i++) {
+                expect(originals[i]).toEqual(snapshots[i]);
+            }
+        }));
+    });
+
+    test("monotonic array growth", () => {
+        fc.assert(fc.property(
+            fc.array(fc.jsonValue(), { minLength: 0, maxLength: 10 }),
+            cutPointsArb(500),
+            (arr, cuts) => {
+                const s = JSON.stringify(arr);
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields } = collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                for (let i = 1; i < yields.length; i++) {
+                    const prev = yields[i - 1] as unknown[];
+                    const curr = yields[i] as unknown[];
+                    expect(prev).toBeArray();
+                    expect(curr).toBeArray();
+                    expect(curr.length).toBeGreaterThanOrEqual(prev.length);
+                }
+            },
+        ));
+    });
+
+    test("monotonic object key growth", () => {
+        fc.assert(fc.property(
+            fc.dictionary(fc.string(), fc.jsonValue(), { minKeys: 0, maxKeys: 8 }),
+            cutPointsArb(500),
+            (obj, cuts) => {
+                const s = JSON.stringify(obj);
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields } = collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                for (let i = 1; i < yields.length; i++) {
+                    const prevKeys = Object.keys(yields[i - 1] as Record<string, unknown>);
+                    const currKeys = Object.keys(yields[i] as Record<string, unknown>);
+                    expect(currKeys.length).toBeGreaterThanOrEqual(prevKeys.length);
+                    // All previous keys are still present
+                    for (const k of prevKeys) {
+                        expect(currKeys).toContain(k);
+                    }
+                }
+            },
+        ));
+    });
+
+    test("string prefix property", () => {
+        fc.assert(fc.property(fc.string(), cutPointsArb(500), (str, cuts) => {
+            const s = JSON.stringify(str);
+            const realCuts = cuts.filter(c => c < s.length);
+            const { yields, final } = collectYieldsAndReturn(
+                parseJson(chunked(s, realCuts)),
+            );
+            // Each yield is a prefix of the next
+            for (let i = 1; i < yields.length; i++) {
+                expect(yields[i]).toStartWith(yields[i - 1] as string);
+            }
+            // Last yield (if any) is a prefix of the final value
+            if (yields.length > 0) {
+                expect(final).toStartWith(yields[yields.length - 1] as string);
+            }
+        }));
+    });
+
+    test("multi-chunk input produces at least one yield", () => {
+        fc.assert(fc.property(fc.jsonValue(), (value) => {
+            const s = JSON.stringify(value);
+            if (s.length < 2) return; // can't split a 1-char string into 2 non-empty chunks
+            // Split at the midpoint to guarantee 2 non-empty chunks
+            const mid = Math.floor(s.length / 2);
+            const { yields } = collectYieldsAndReturn(
+                parseJson(chunked(s, [mid])),
+            );
+            expect(yields.length).toBeGreaterThanOrEqual(1);
+        }));
+    });
+
+    test("yields are JSON-serializable", () => {
+        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), (value, cuts) => {
+            const s = JSON.stringify(value);
+            const realCuts = cuts.filter(c => c < s.length);
+            const { yields } = collectYieldsAndReturn(
+                parseJson(chunked(s, realCuts)),
+            );
+            for (const y of yields) {
+                if (y === undefined) continue;
+                expect(() => JSON.stringify(y)).not.toThrow();
+            }
+        }));
+    });
+
+    test("no undefined yields for JSON.stringify output", () => {
+        fc.assert(fc.property(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), (value, cuts, empties) => {
+            const s = JSON.stringify(value);
+            const realCuts = cuts.filter(c => c < s.length);
+            const { yields } = collectYieldsAndReturn(
+                parseJson(chunkedWithEmpties(s, realCuts, empties)),
+            );
+            for (const y of yields) {
+                expect(y).not.toEqual(undefined);
+            }
+        }));
+    });
+
+    test("whitespace padding does not affect final value", () => {
+        const wsChar = fc.constantFrom(" ", "\t", "\n", "\r");
+        const wsPadding = fc.array(wsChar, { minLength: 0, maxLength: 10 }).map(chars => chars.join(""));
+
+        fc.assert(fc.property(fc.jsonValue(), wsPadding, wsPadding, cutPointsArb(200), (value, leading, trailing, cuts) => {
+            const core = JSON.stringify(value);
+            const s = leading + core + trailing;
+            const realCuts = cuts.filter(c => c < s.length);
+            const { final } = collectYieldsAndReturn(
+                parseJson(chunked(s, realCuts)),
+            );
+            // Compare against JSON.parse to account for round-trip lossy
+            // conversions (e.g., -0 → 0)
+            expect(final).toEqual(JSON.parse(core));
+        }));
+    });
+
+    test("number finiteness", () => {
+        fc.assert(fc.property(
+            fc.double({ noNaN: true, noDefaultInfinity: true }),
+            cutPointsArb(50),
+            (num, cuts) => {
+                const s = JSON.stringify(num);
+                if (s === "null") return; // skip edge cases like JSON.stringify(NaN) → "null"
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields } = collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                for (const y of yields) {
+                    if (typeof y === "number") {
+                        expect(Number.isFinite(y)).toBe(true);
+                    }
+                }
+            },
+        ));
+    });
+
+    test("array completed-elements prefix", () => {
+        fc.assert(fc.property(
+            fc.array(fc.jsonValue(), { minLength: 1, maxLength: 8 }),
+            cutPointsArb(500),
+            (arr, cuts) => {
+                const s = JSON.stringify(arr);
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields, final } = collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                const finalArr = final as unknown[];
+                for (const y of yields) {
+                    const yArr = y as unknown[];
+                    if (yArr.length === 0) continue;
+                    // All elements except the last must match the final array's prefix
+                    const completed = yArr.slice(0, -1);
+                    const expectedPrefix = finalArr.slice(0, completed.length);
+                    expect(completed).toEqual(expectedPrefix);
+                }
+            },
+        ));
+    });
+
+    test("object completed-values prefix", () => {
+        // Use alpha-only keys so insertion order is preserved (no integer-like keys)
+        const alphaKey = fc.string({ minLength: 1, maxLength: 6 }).filter(s => !/^[0-9]+$/.test(s));
+        const objArb = fc.dictionary(alphaKey, fc.jsonValue(), { minKeys: 1, maxKeys: 8 });
+
+        fc.assert(fc.property(
+            objArb,
+            cutPointsArb(500),
+            (obj, cuts) => {
+                const s = JSON.stringify(obj);
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields, final } = collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                const finalObj = final as Record<string, unknown>;
+                const finalKeys = Object.keys(finalObj);
+                for (const y of yields) {
+                    const yObj = y as Record<string, unknown>;
+                    const yKeys = Object.keys(yObj);
+                    if (yKeys.length === 0) continue;
+                    // All key-value pairs except the last must match the final object
+                    const completedKeys = yKeys.slice(0, -1);
+                    for (const k of completedKeys) {
+                        expect(finalKeys).toContain(k);
+                        expect(yObj[k]).toEqual(finalObj[k]);
+                    }
+                }
+            },
+        ));
     });
 });

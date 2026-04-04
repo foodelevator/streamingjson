@@ -306,12 +306,13 @@ function* parseNumber(inp: Input): Generator<number, number> {
     r = inp("peek");
     if (["e", "E"].includes(r.char)) {
         if (r.yield) yield Number(numStr);
+        const numWithoutExp = numStr;
         numStr += r.char;
         inp("eat");
 
         r = inp("peek");
         if (["-", "+"].includes(r.char)) {
-            if (r.yield) yield Number(numStr);
+            if (r.yield) yield Number(numWithoutExp);
             numStr += r.char;
             inp("eat");
         }

@@ -6,7 +6,8 @@
     ".": "./exports.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "fast-check": "^4.6.0"
   },
   "peerDependencies": {
     "typescript": "^5"
