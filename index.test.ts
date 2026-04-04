@@ -1,12 +1,18 @@
 import { describe, test, expect } from "bun:test";
 import { parseJson, JsonParsingError, input } from "./index";
 
+function getFinalValue(gen: Generator<unknown, unknown>): unknown {
+    let value;
+    while (!(value = gen.next()).done);
+    return value.value;
+}
+
 function expectMatch(input: string) {
     let ours: { value: unknown } | { error: unknown };
     let theirs: { value: unknown } | { error: unknown };
 
     try {
-        ours = { value: parseJson(input) };
+        ours = { value: getFinalValue(parseJson(input)) };
     } catch (e) {
         ours = { error: e };
     }
@@ -313,7 +319,7 @@ describe("__proto__ key", () => {
     test("__proto__ with array value", () => expectMatch('{"__proto__":[1,2,3],"a":"ok"}'));
     test("nested object with __proto__", () => expectMatch('{"a":{"__proto__":"bad","b":1}}'));
     test("__proto__ key doesn't cause prototype pollution", () => {
-        const result = parseJson('{"__proto__":{"hacked":true}}');
+        const result = getFinalValue(parseJson('{"__proto__":{"hacked":true}}'));
         expect(Object.hasOwnProperty.call(result, "__proto__")).toBe(true);
         expect(Object.getPrototypeOf(result).hacked).not.toBe(true);
     });
@@ -340,27 +346,27 @@ describe("raw control characters in strings", () => {
 
 describe("JsonParsingError identity", () => {
     test("throws JsonParsingError for invalid input", () => {
-        expect(() => parseJson("")).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson(""))).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for trailing content", () => {
-        expect(() => parseJson("truetrue")).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson("truetrue"))).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for unterminated string", () => {
-        expect(() => parseJson('"hello')).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson('"hello'))).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for invalid number", () => {
-        expect(() => parseJson("1e")).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson("1e"))).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing bracket", () => {
-        expect(() => parseJson("[1,2")).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson("[1,2"))).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing brace", () => {
-        expect(() => parseJson('{"a":1')).toThrow(JsonParsingError);
+        expect(() => getFinalValue(parseJson('{"a":1'))).toThrow(JsonParsingError);
     });
 });
 
@@ -420,7 +426,7 @@ describe("whitespace", () => {
 
 describe("number edge cases", () => {
     test("negative zero equals zero", () => {
-        const result = parseJson("-0");
+        const result = getFinalValue(parseJson("-0"));
         expect(Object.is(result, -0)).toBe(true);
     });
 
@@ -447,6 +453,6 @@ describe("streaming", () => {
                 i = j;
             }
         };
-        expect(parseJson(gen())).toEqual(JSON.parse(s));
+        expect(getFinalValue(parseJson(gen()))).toEqual(JSON.parse(s));
     });
 });
