@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { parseJson, JsonParsingError, input } from "./index";
+import { zStreaming } from "./zod-schema";
+import { z } from "zod";
 import fc from "fast-check";
 
 /** Drain a generator, collecting every yielded value and the final return. */
@@ -757,4 +759,107 @@ describe("property tests", () => {
             },
         ));
     });
+});
+
+describe("zStreaming property tests", () => {
+    /** JSON-safe number arbitrary. */
+    const jsonNumber = fc.integer({ min: -1000000, max: 1000000 });
+
+    const testSchemas: { name: string; schema: z.ZodType; arb: fc.Arbitrary<unknown> }[] = [
+        {
+            name: "flat object",
+            schema: z.object({ name: z.string(), age: z.number(), ok: z.boolean() }),
+            arb: fc.record({ name: fc.string(), age: jsonNumber, ok: fc.boolean() }),
+        },
+        {
+            name: "string array",
+            schema: z.array(z.string()),
+            arb: fc.array(fc.string(), { maxLength: 8 }),
+        },
+        {
+            name: "number array",
+            schema: z.array(z.number()),
+            arb: fc.array(jsonNumber, { maxLength: 8 }),
+        },
+        {
+            name: "nested object",
+            schema: z.object({ meta: z.object({ id: z.number() }), tags: z.array(z.string()) }),
+            arb: fc.record({ meta: fc.record({ id: jsonNumber }), tags: fc.array(fc.string(), { maxLength: 5 }) }),
+        },
+        {
+            name: "enum field",
+            schema: z.object({ color: z.enum(["r", "g", "b"]) }),
+            arb: fc.record({ color: fc.constantFrom("r" as const, "g" as const, "b" as const) }),
+        },
+        {
+            name: "literal string field",
+            schema: z.object({ type: z.literal("event") }),
+            arb: fc.constant({ type: "event" }),
+        },
+        {
+            name: "literal number field",
+            schema: z.object({ code: z.literal(200) }),
+            arb: fc.constant({ code: 200 }),
+        },
+        {
+            name: "nullable field",
+            schema: z.object({ x: z.nullable(z.string()) }),
+            arb: fc.record({ x: fc.option(fc.string(), { nil: null }) }),
+        },
+        {
+            name: "union of objects",
+            schema: z.union([z.object({ a: z.string() }), z.object({ b: z.number() })]),
+            arb: fc.oneof(
+                fc.record({ a: fc.string() }),
+                fc.record({ b: jsonNumber }),
+            ),
+        },
+        {
+            name: "array of objects with enum",
+            schema: z.array(z.object({ label: z.enum(["x", "y"]), n: z.number() })),
+            arb: fc.array(
+                fc.record({ label: fc.constantFrom("x" as const, "y" as const), n: jsonNumber }),
+                { maxLength: 5 },
+            ),
+        },
+        {
+            name: "deeply nested object",
+            schema: z.object({ a: z.object({ b: z.object({ c: z.string() }) }) }),
+            arb: fc.record({ a: fc.record({ b: fc.record({ c: fc.string() }) }) }),
+        },
+        {
+            name: "object with null and boolean",
+            schema: z.object({ alive: z.boolean(), data: z.null() }),
+            arb: fc.record({ alive: fc.boolean(), data: fc.constant(null) }),
+        },
+    ];
+
+    for (const { name, schema, arb } of testSchemas) {
+        test(`every yield conforms to zStreaming — ${name}`, () => {
+            const streaming = zStreaming(schema);
+            fc.assert(fc.asyncProperty(arb, cutPointsArb(500), async (value, cuts) => {
+                const s = JSON.stringify(value);
+                const realCuts = cuts.filter(c => c < s.length);
+                const { yields, final } = await collectYieldsAndReturn(
+                    parseJson(chunked(s, realCuts)),
+                );
+                // Final value must conform to the original schema
+                expect(schema.safeParse(final).success).toBe(true);
+                // Every intermediate yield must conform to the streaming schema
+                for (const y of yields) {
+                    const result = streaming.safeParse(y);
+                    if (!result.success) {
+                        throw new Error(
+                            `Yield failed zStreaming validation:\n` +
+                            `  schema: ${name}\n` +
+                            `  json: ${s}\n` +
+                            `  cuts: [${realCuts.join(",")}]\n` +
+                            `  yield: ${JSON.stringify(y)}\n` +
+                            `  error: ${JSON.stringify(result.error.issues)}`
+                        );
+                    }
+                }
+            }));
+        });
+    }
 });
