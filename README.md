@@ -1,20 +1,23 @@
 # streamingjson
 
-Streaming JSON parser that yields partial values as chunks arrive.
+Streaming JSON parser that produces partial values as chunks arrive.
 
-- `parseJson` takes any `AsyncIterable<string>` and yields partial snapshots at each chunk boundary.
-- `zStreaming` wraps a Zod schema so it accepts those partials.
+- `makeParser` initializes a `JsonParser` instance.
+- `JsonParser.feed` appends a JSON chunk to the parser & returns the current partial value.
+- `JsonParser.value` returns a reference to the current value.
+- `JsonParser.end` finalizes the parser, making sure that it is at the end of a JSON value.
+- `zStreaming` wraps a Zod schema so it accepts partial values.
 
 ## Example Usage
 
 ```ts
-import { parseJson } from "@foodelevator/streamingjson";
+import { makeParser } from "@foodelevator/streamingjson";
 
-const res = await fetch("https://api.example.com/user/1");
-const json = res.body!.pipeThrough(new TextDecoderStream());
+const parser = makeParser();
 
-for await (const partial of parseJson(json)) {
-    console.log(partial);
+function onDelta(delta: string) {
+    console.log(parser.feed(delta));
+    // {}
     // { name: "Ali" }
     // { name: "Alice" }
     // { name: "Alice", age: 3 }
@@ -22,7 +25,11 @@ for await (const partial of parseJson(json)) {
     // { name: "Alice", age: 34, tags: ["ty"] }
     // { name: "Alice", age: 34, tags: ["typescript", "z"] }
     // ...
+
 }
+
+// Optionally call when no more chunks will arrive. Throws if the document is incomplete or invalid.
+const finalValue = parser.end();
 ```
 
 ```ts

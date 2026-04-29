@@ -1,21 +1,28 @@
 import { describe, test, expect } from "bun:test";
-import { parseJson, JsonParsingError, input } from "./index";
+import { makeParser, JsonParsingError } from "./index";
 import { zStreaming } from "./zod-schema";
 import { z } from "zod";
 import fc from "fast-check";
 
-/** Drain a generator, collecting every yielded value and the final return. */
-async function collectYieldsAndReturn(gen: AsyncGenerator<unknown, unknown>) {
+/** Feed chunks into a parser, collecting observable value changes and the final value. */
+async function collectSnapshotsAndFinal(chunks: AsyncIterable<string> | Iterable<string>) {
+    const parser = makeParser();
     const yields: unknown[] = [];
-    let next;
-    for (next = await gen.next(); !next.done; next = await gen.next()) {
-        yields.push(next.value);
+    let lastYield: unknown = undefined;
+
+    for await (const chunk of chunks) {
+        const value = parser.feed(chunk);
+        if (value !== undefined && value !== lastYield) {
+            yields.push(value);
+            lastYield = value;
+        }
     }
-    return { yields, final: next.value };
+
+    return { yields, final: parser.end() };
 }
 
-function parseJsonString(input: string) {
-    return parseJson(async function*() { yield input; }());
+function parseString(input: string) {
+    return collectSnapshotsAndFinal([input]);
 }
 
 async function expectMatch(input: string) {
@@ -25,7 +32,7 @@ async function expectMatch(input: string) {
 
 
     try {
-        ours = { value: (await collectYieldsAndReturn(parseJsonString(input))).final };
+        ours = { value: (await parseString(input)).final };
     } catch (e) {
         ours = { error: e };
     }
@@ -37,79 +44,78 @@ async function expectMatch(input: string) {
     }
 
     if ("error" in ours && "error" in theirs) return; // both threw, OK
-    if ("error" in ours) throw new Error(`parseJson threw but JSON.parse returned ${JSON.stringify((theirs as any).value)}`);
-    if ("error" in theirs) throw new Error(`JSON.parse threw but parseJson returned ${JSON.stringify((ours as any).value)}`);
+    if ("error" in ours) throw new Error(`parser threw but JSON.parse returned ${JSON.stringify((theirs as any).value)}`);
+    if ("error" in theirs) throw new Error(`JSON.parse threw but parser returned ${JSON.stringify((ours as any).value)}`);
 
     expect(ours.value).toEqual(theirs.value);
 }
 
-describe("input wrapper", () => {
-    test("basic", async () => {
-        async function* rawData() {
-            yield "hel";
-            yield "lo";
-            yield "!";
-        }
-
-        const f = input(rawData());
-        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+describe("push parser", () => {
+    test("initial value, leading whitespace, empty chunks, feed return", () => {
+        const parser = makeParser();
+        expect(parser.value()).toBeUndefined();
+        expect(parser.feed("")).toBeUndefined();
+        expect(parser.feed(" \n\t")).toBeUndefined();
+        const value = parser.feed("{");
+        expect(value).toEqual({});
+        expect(parser.value()).toBe(value);
     });
-    test("peeking", async () => {
-        async function* rawData() {
-            yield "hel";
-            yield "lo";
-            yield "!";
-        }
 
-        const f = input(rawData());
-        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("peek")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("peek")).toEqual({ char: "l", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("peek")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("peek")).toEqual({ char: "", yield: true, eof: true });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+    test("partial object, key, property, array, string, number, and literal behavior", () => {
+        const parser = makeParser();
+        expect(parser.feed('{"na')).toEqual({});
+        expect(parser.feed('me":')).toEqual({});
+        expect(Object.hasOwnProperty.call(parser.value() as object, "name")).toBe(false);
+        expect(parser.feed('"Ali')).toEqual({ name: "Ali" });
+        expect(parser.feed('ce","scores":[1,2],"ok":tru')).toEqual({ name: "Alice", scores: [1, 2], ok: true });
+        expect(parser.feed('e}')).toEqual({ name: "Alice", scores: [1, 2], ok: true });
+        expect(parser.end()).toEqual({ name: "Alice", scores: [1, 2], ok: true });
     });
-    test("empty chunks", async () => {
-        async function* rawData() {
-            yield "";
-            yield "";
-            yield "hel";
-            yield "lo";
-            yield "";
-            yield "";
-            yield "";
-            yield "";
-            yield "!";
-            yield "";
-            yield "";
-        }
 
-        const f = input(rawData());
-        expect(await f("eat")).toEqual({ char: "h", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "e", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "l", yield: false, eof: false });
-        expect(await f("eat")).toEqual({ char: "o", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "!", yield: true, eof: false });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
-        expect(await f("eat")).toEqual({ char: "", yield: true, eof: true });
+    test("object remains visible when a chunk ends after a property colon", () => {
+        const parser = makeParser();
+        expect(parser.feed('{"a":')).toEqual({});
+        expect(Object.hasOwnProperty.call(parser.value, "a")).toBe(false);
+    });
+
+    test("preserves completed nested identity across later sibling fields", () => {
+        const parser = makeParser();
+        parser.feed('{"a":[1,2],"b"');
+        const firstArray = (parser.value() as { a: unknown[] }).a;
+        expect(firstArray).toEqual([1, 2]);
+        parser.feed(':1,"c":{"d":2},"e"');
+        expect((parser.value() as { a: unknown[] }).a).toBe(firstArray);
+        const firstObject = (parser.value() as { c: object }).c;
+        parser.feed(':3}');
+        expect((parser.value() as { a: unknown[]; c: object }).a).toBe(firstArray);
+        expect((parser.value() as { c: object }).c).toBe(firstObject);
+    });
+
+    test("end accepts trailing whitespace and closes parser", () => {
+        const parser = makeParser();
+        parser.feed("[1,2]  \n");
+        expect(parser.end()).toEqual([1, 2]);
+        expect(() => parser.feed(" ")).toThrow(JsonParsingError);
+        expect(() => parser.end()).toThrow(JsonParsingError);
+    });
+
+    test("trailing non-whitespace throws during feed and is terminal", () => {
+        const parser = makeParser();
+        parser.feed("true");
+        expect(() => parser.feed("false")).toThrow(JsonParsingError);
+        expect(() => parser.feed(" ")).toThrow(JsonParsingError);
+        expect(() => parser.end()).toThrow(JsonParsingError);
+    });
+
+    test("end throws for empty, whitespace, incomplete, and invalid input and is terminal", () => {
+        for (const source of ["", "   ", "{", "[1,", '"unterminated', "1e", "nope"]) {
+            const parser = makeParser();
+            if (source) {
+                try { parser.feed(source); } catch {}
+            }
+            expect(() => parser.end()).toThrow(JsonParsingError);
+            expect(() => parser.feed("null")).toThrow(JsonParsingError);
+        }
     });
 });
 
@@ -332,7 +338,7 @@ describe("__proto__ key", () => {
     test("__proto__ with array value", () => expectMatch('{"__proto__":[1,2,3],"a":"ok"}'));
     test("nested object with __proto__", () => expectMatch('{"a":{"__proto__":"bad","b":1}}'));
     test("__proto__ key doesn't cause prototype pollution", async () => {
-        const { final } = await collectYieldsAndReturn(parseJson(async function*() { yield '{"__proto__":{"hacked":true}}' }()));
+        const { final } = await collectSnapshotsAndFinal(['{"__proto__":{"hacked":true}}']);
         expect(Object.hasOwnProperty.call(final, "__proto__")).toBe(true);
         expect(Object.getPrototypeOf(final).hacked).not.toBe(true);
     });
@@ -359,27 +365,27 @@ describe("raw control characters in strings", () => {
 
 describe("JsonParsingError identity", () => {
     test("throws JsonParsingError for invalid input", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString(""))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString("")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for trailing content", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString("truetrue"))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString("truetrue")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for unterminated string", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString('"hello'))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString('"hello')).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for invalid number", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString("1e"))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString("1e")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing bracket", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString("[1,2"))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString("[1,2")).final).toThrow(JsonParsingError);
     });
 
     test("throws JsonParsingError for missing closing brace", () => {
-        expect(async () => (await collectYieldsAndReturn(parseJsonString('{"a":1'))).final).toThrow(JsonParsingError);
+        expect(async () => (await parseString('{"a":1')).final).toThrow(JsonParsingError);
     });
 });
 
@@ -439,7 +445,7 @@ describe("whitespace", () => {
 
 describe("number edge cases", () => {
     test("negative zero equals zero", async () => {
-        const result = (await collectYieldsAndReturn(parseJsonString("-0"))).final;
+        const result = (await parseString("-0")).final;
         expect(Object.is(result, -0)).toBe(true);
     });
 
@@ -466,7 +472,7 @@ describe("streaming", () => {
                 i = j;
             }
         };
-        expect((await collectYieldsAndReturn(parseJson(gen()))).final).toEqual(JSON.parse(s));
+        expect((await collectSnapshotsAndFinal(gen())).final).toEqual(JSON.parse(s));
     });
 });
 
@@ -527,8 +533,8 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), async (value, cuts, empties) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { final } = await collectYieldsAndReturn(
-                parseJson(chunkedWithEmpties(s, realCuts, empties)),
+            const { final } = await collectSnapshotsAndFinal(
+                chunkedWithEmpties(s, realCuts, empties),
             );
             expect(final).toEqual(JSON.parse(s));
         }));
@@ -538,8 +544,8 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields, final } = await collectYieldsAndReturn(
-                parseJson(chunked(s, realCuts)),
+            const { yields, final } = await collectSnapshotsAndFinal(
+                chunked(s, realCuts),
             );
             const expected = structuralType(final);
             for (const y of yields) {
@@ -552,14 +558,9 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const gen = parseJson(chunked(s, realCuts));
-            const snapshots: unknown[] = [];
-            const originals: unknown[] = [];
-            let next;
-            for (next = await gen.next(); !next.done; next = await gen.next()) {
-                originals.push(next.value);
-                snapshots.push(structuredClone(next.value));
-            }
+            const { yields } = await collectSnapshotsAndFinal(chunked(s, realCuts));
+            const snapshots = yields.map(y => structuredClone(y));
+            const originals = yields;
             // After generator completes, no yielded value should have been mutated
             for (let i = 0; i < originals.length; i++) {
                 expect(originals[i]).toEqual(snapshots[i]);
@@ -574,8 +575,8 @@ describe("property tests", () => {
             async (arr, cuts) => {
                 const s = JSON.stringify(arr);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 for (let i = 1; i < yields.length; i++) {
                     const prev = yields[i - 1] as unknown[];
@@ -595,8 +596,8 @@ describe("property tests", () => {
             async (obj, cuts) => {
                 const s = JSON.stringify(obj);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 for (let i = 1; i < yields.length; i++) {
                     const prevKeys = Object.keys(yields[i - 1] as Record<string, unknown>);
@@ -615,8 +616,8 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.string(), cutPointsArb(500), async (str, cuts) => {
             const s = JSON.stringify(str);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields, final } = await collectYieldsAndReturn(
-                parseJson(chunked(s, realCuts)),
+            const { yields, final } = await collectSnapshotsAndFinal(
+                chunked(s, realCuts),
             );
             // Each yield is a prefix of the next
             for (let i = 1; i < yields.length; i++) {
@@ -635,8 +636,8 @@ describe("property tests", () => {
             if (s.length < 2) return; // can't split a 1-char string into 2 non-empty chunks
             // Split at the midpoint to guarantee 2 non-empty chunks
             const mid = Math.floor(s.length / 2);
-            const { yields } = await collectYieldsAndReturn(
-                parseJson(chunked(s, [mid])),
+            const { yields } = await collectSnapshotsAndFinal(
+                chunked(s, [mid]),
             );
             expect(yields.length).toBeGreaterThanOrEqual(1);
         }));
@@ -646,8 +647,8 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), async (value, cuts) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields } = await collectYieldsAndReturn(
-                parseJson(chunked(s, realCuts)),
+            const { yields } = await collectSnapshotsAndFinal(
+                chunked(s, realCuts),
             );
             for (const y of yields) {
                 if (y === undefined) continue;
@@ -660,8 +661,8 @@ describe("property tests", () => {
         fc.assert(fc.asyncProperty(fc.jsonValue(), cutPointsArb(200), emptyPosArb(20), async (value, cuts, empties) => {
             const s = JSON.stringify(value);
             const realCuts = cuts.filter(c => c < s.length);
-            const { yields } = await collectYieldsAndReturn(
-                parseJson(chunkedWithEmpties(s, realCuts, empties)),
+            const { yields } = await collectSnapshotsAndFinal(
+                chunkedWithEmpties(s, realCuts, empties),
             );
             for (const y of yields) {
                 expect(y).not.toEqual(undefined);
@@ -677,8 +678,8 @@ describe("property tests", () => {
             const core = JSON.stringify(value);
             const s = leading + core + trailing;
             const realCuts = cuts.filter(c => c < s.length);
-            const { final } = await collectYieldsAndReturn(
-                parseJson(chunked(s, realCuts)),
+            const { final } = await collectSnapshotsAndFinal(
+                chunked(s, realCuts),
             );
             // Compare against JSON.parse to account for round-trip lossy
             // conversions (e.g., -0 → 0)
@@ -694,8 +695,8 @@ describe("property tests", () => {
                 const s = JSON.stringify(num);
                 if (s === "null") return; // skip edge cases like JSON.stringify(NaN) → "null"
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 for (const y of yields) {
                     if (typeof y === "number") {
@@ -713,8 +714,8 @@ describe("property tests", () => {
             async (arr, cuts) => {
                 const s = JSON.stringify(arr);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields, final } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields, final } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 const finalArr = final as unknown[];
                 for (const y of yields) {
@@ -740,8 +741,8 @@ describe("property tests", () => {
             async (obj, cuts) => {
                 const s = JSON.stringify(obj);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields, final } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields, final } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 const finalObj = final as Record<string, unknown>;
                 const finalKeys = Object.keys(finalObj);
@@ -840,8 +841,8 @@ describe("zStreaming property tests", () => {
             fc.assert(fc.asyncProperty(arb, cutPointsArb(500), async (value, cuts) => {
                 const s = JSON.stringify(value);
                 const realCuts = cuts.filter(c => c < s.length);
-                const { yields, final } = await collectYieldsAndReturn(
-                    parseJson(chunked(s, realCuts)),
+                const { yields, final } = await collectSnapshotsAndFinal(
+                    chunked(s, realCuts),
                 );
                 // Final value must conform to the original schema
                 expect(schema.safeParse(final).success).toBe(true);

@@ -1,6 +1,10 @@
 export {
-    parseJson,
+    makeParser,
     JsonParsingError,
+} from "./index.ts";
+
+export type {
+    JsonParser,
 } from "./index.ts";
 
 export {

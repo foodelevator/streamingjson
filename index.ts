@@ -1,99 +1,156 @@
-/**
- * - Never yield anything that is then modified
- */
+export class JsonParsingError extends Error { }
 
-export class JsonParsingError extends Error {
-}
+const NEED_MORE = Symbol("need more");
+type NeedMore = typeof NEED_MORE;
 
-export async function* parseJson(s: AsyncIterable<string>): AsyncGenerator<unknown, unknown> {
-    let inp = input(s);
-    for await (const _ of skipWs(inp, () => undefined));
-    const value = yield* parse(inp);
-    yield* skipWs(inp, () => value);
-    if (!(await inp("peek")).eof) throw new JsonParsingError();
-    return value;
-}
+type Char = { char: string, eof: boolean, chunkEnd: boolean };
 
-async function* gmap<A, B, R>(g: AsyncGenerator<A, R>, f: (a: A) => B): AsyncGenerator<B, R> {
-    let next = await g.next();
-    while (!next.done) {
-        yield f(next.value);
-        next = await g.next();
+export type JsonParser = {
+    value(): unknown;
+    feed(chunk: string): unknown;
+    end(): unknown;
+};
+
+export function makeParser(): JsonParser {
+    const input = new Input();
+    const parser = parseDocument(input);
+    let value: unknown;
+    let closed = false;
+    let poisonedError: unknown;
+
+    function fail(e: unknown): never {
+        poisonedError = e;
+        closed = true;
+        throw e;
     }
-    return next.value;
-}
 
-type Input = (mode: "peek" | "eat") => Promise<{ char: string; yield: boolean; eof: boolean }>;
-
-/**
- * Returns a function which when called repeatedly returns succesive characters from {@link raw}. Its return values' fields are:
- * - char: The current character. Is the empty string when `eof` is true.
- * - yield: Is `true` iff this is the last character in a chunk produced by {@link raw}.
- * - eof: Is `true` when {@link raw} is out of characters.
- */
-export function input(raw: AsyncIterable<string>): Input {
-    const iterator = raw[Symbol.asyncIterator]();
-    let chunk = "";
-    let index = 0;
-
-    return async (mode) => {
-        while (index >= chunk.length) {
-            const next = await iterator.next();
-            if (next.done) return { char: "", yield: true, eof: true };
-            chunk = next.value;
-            index = 0;
+    function run() {
+        try {
+            while (true) {
+                const next = parser.next();
+                if (next.done) {
+                    value = next.value;
+                    return true;
+                }
+                if (next.value === NEED_MORE) return false;
+                value = next.value;
+            }
+        } catch (e) {
+            fail(e);
         }
-        const char = chunk[index]!;
-        const isLast = index === chunk.length - 1;
-        if (mode === "eat") index += 1;
-        return { char, yield: isLast, eof: false };
+    }
+
+    function checkOpen() {
+        if (poisonedError !== undefined) throw poisonedError;
+        if (closed) throw new JsonParsingError();
+    }
+
+    return {
+        value() { return value; },
+        feed(chunk: string) {
+            checkOpen();
+            input.buffer += chunk;
+            run();
+            return value;
+        },
+        end() {
+            checkOpen();
+            input.ended = true;
+            if (!run()) fail(new JsonParsingError());
+            closed = true;
+            return value;
+        },
     };
 }
 
-async function* skipWs<T>(inp: Input, toYield: () => T) {
-    while (true) {
-        const r = await inp("peek");
-        if (![" ", "\t", "\n", "\r"].includes(r.char)) break;
-        inp("eat");
-        if (r.yield) yield toYield();
+class Input {
+    buffer = "";
+    index = 0;
+    ended = false;
+
+    *peek(): Generator<NeedMore, Char> {
+        while (this.index >= this.buffer.length) {
+            if (this.ended) return { char: "", eof: true, chunkEnd: true };
+            yield NEED_MORE;
+        }
+        return { char: this.buffer[this.index]!, eof: false, chunkEnd: this.index == this.buffer.length - 1 };
+    }
+
+    *eat(): Generator<NeedMore, Char> {
+        const r = yield* this.peek();
+        if (!r.eof && ++this.index > 4096) {
+            this.buffer = this.buffer.slice(this.index);
+            this.index = 0;
+        }
+        return r;
     }
 }
 
-async function* parse(inp: Input): AsyncGenerator<unknown, unknown> {
-    const r = await inp("peek");
+function* gmap<A, B, R>(g: Generator<A | NeedMore, R>, f: (value: A) => B): Generator<B | NeedMore, R> {
+    while (true) {
+        const next = g.next();
+        if (next.done) return next.value;
+        if (next.value === NEED_MORE) yield NEED_MORE;
+        else yield f(next.value);
+    }
+}
+
+function* skipWs<T>(inp: Input, toYield: () => T) {
+    while (true) {
+        const r = yield* inp.peek();
+        if (![" ", "\t", "\n", "\r"].includes(r.char)) break;
+        yield* inp.eat();
+        if (r.chunkEnd) yield toYield();
+    }
+}
+
+function* parseDocument(inp: Input) {
+    yield* skipWs(inp, () => undefined);
+    const first = yield* inp.peek();
+    if (first.eof) throw new JsonParsingError();
+    const value = yield* parse(inp);
+    yield* skipWs(inp, () => value);
+    const r = yield* inp.peek();
+    if (!r.eof) throw new JsonParsingError();
+    return value;
+}
+
+function* parse(inp: Input): Generator<unknown> {
+    const r = yield* inp.peek();
+    if (r.eof) throw new JsonParsingError();
     switch (r.char) {
         case "n": return yield* parseLiteral(inp, "null", null);
         case "t": return yield* parseLiteral(inp, "true", true);
         case "f": return yield* parseLiteral(inp, "false", false);
         case "[": return yield* parseArray(inp);
         case '"': return yield* parseString(inp);
-        case '{': return yield* parseObject(inp);
+        case "{": return yield* parseObject(inp);
         default:
             if ("0" <= r.char && r.char <= "9" || r.char == "-") return yield* parseNumber(inp);
     }
     throw new JsonParsingError();
 }
 
-async function* parseLiteral<T>(inp: Input, literal: string, value: T) {
+function* parseLiteral<T>(inp: Input, literal: string, value: T) {
     for (let i = 0; i < literal.length; i++) {
-        const r = await inp("eat");
+        const r = yield* inp.eat();
         if (r.char !== literal[i]) throw new JsonParsingError();
-        if (r.yield) yield value;
+        if (r.chunkEnd) yield value;
     }
     return value;
 }
 
-async function* parseArray(inp: Input) {
-    let r = await inp("eat");
+function* parseArray(inp: Input) {
+    let r = yield* inp.eat();
     if (r.char !== "[") throw new JsonParsingError();
-    if (r.yield) yield [];
+    if (r.chunkEnd) yield [];
 
     let result: unknown[] = [];
     yield* skipWs(inp, () => []);
-    r = await inp("peek");
+    r = yield* inp.peek();
     if (r.char === "]") {
-        await inp("eat");
-        if (r.yield) yield [];
+        yield* inp.eat();
+        if (r.chunkEnd) yield result;
         return result;
     }
 
@@ -102,14 +159,15 @@ async function* parseArray(inp: Input) {
         result = [...result, element];
         yield* skipWs(inp, () => result);
 
-        const r = await inp("peek");
+        r = yield* inp.peek();
         if (r.char === "]") {
-            await inp("eat");
-            if (r.yield) yield result;
+            yield* inp.eat();
+            if (r.chunkEnd) yield result;
             return result;
         }
         if (r.char !== ",") throw new JsonParsingError();
-        if ((await inp("eat")).yield) yield result;
+        yield* inp.eat();
+        if (r.chunkEnd) yield result;
         yield* skipWs(inp, () => result);
     }
 }
@@ -121,11 +179,11 @@ function hexDigit(c: string) {
     throw new JsonParsingError();
 }
 
-async function* parseHex4(inp: Input) {
+function* parseHex4(inp: Input) {
     let result = 0;
     for (let i = 0; i < 4; i++) {
-        const r = await inp("eat");
-        if (r.yield) yield;
+        const r = yield* inp.eat();
+        if (r.chunkEnd) yield;
         result = (result << 4) | hexDigit(r.char);
     }
     return result;
@@ -145,50 +203,47 @@ const basicEscapes: Record<string, string> = {
 /**
  * Expects the initial `\` to have been eaten already
  */
-async function* parseEscape(inp: Input): AsyncGenerator<void, string> {
-    let r = await inp("eat");
+function* parseEscape(inp: Input): Generator<string | NeedMore | undefined> {
+    let r = yield* inp.eat();
     if (r.char in basicEscapes) {
-        if (r.yield) yield;
+        if (r.chunkEnd) yield;
         return basicEscapes[r.char]!;
     }
     if (r.char !== "u") throw new JsonParsingError();
 
-    // WTF-16 is stupid
     const hex = yield* parseHex4(inp);
     if (!(0xD800 <= hex && hex < 0xDC00)) return String.fromCharCode(hex);
-    // High surrogate — check for low surrogate pair
-    r = await inp("peek");
-    if (r.yield) yield;
+
+    r = yield* inp.peek();
+    if (r.chunkEnd) yield;
     if (r.char !== "\\") return String.fromCharCode(hex);
-    await inp("eat"); // '\'
-    r = await inp("peek");
-    if (r.yield) yield;
+    yield* inp.eat();
+    r = yield* inp.peek();
+    if (r.chunkEnd) yield;
     if (r.char !== "u") {
-        // Consumed '\' but next isn't 'u' — emit high surrogate, then handle escape
         const next = yield* parseEscape(inp);
         return String.fromCharCode(hex) + next;
     }
-    await inp("eat"); // 'u'
+    yield* inp.eat();
     const low = yield* parseHex4(inp);
     if (0xDC00 <= low && low < 0xE000)
         return String.fromCodePoint(0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00));
-    // Not a valid low surrogate — emit both
     return String.fromCharCode(hex) + String.fromCharCode(low);
 }
 
-async function* parseString(inp: Input) {
-    let r = await inp("eat");
+function* parseString(inp: Input) {
+    let r = yield* inp.eat();
     if (r.char !== '"') throw new JsonParsingError();
-    if (r.yield) yield "";
+    if (r.chunkEnd) yield "";
 
     let result = "";
     while (true) {
-        r = await inp("eat");
+        r = yield* inp.eat();
         if (r.char === '"') {
-            if (r.yield) yield result;
+            if (r.chunkEnd) yield result;
             return result;
         } else if (r.char === "\\") {
-            if (r.yield) yield result;
+            if (r.chunkEnd) yield result;
             const esc = yield* gmap(parseEscape(inp), () => result);
             result += esc;
         } else if (r.char.charCodeAt(0) < 0x20) {
@@ -198,32 +253,32 @@ async function* parseString(inp: Input) {
             throw new JsonParsingError();
         } else {
             result += r.char;
-            if (r.yield) yield result;
+            if (r.chunkEnd) yield result;
         }
     }
 }
 
-async function* parseObject(inp: Input) {
-    let r = await inp("eat");
+function* parseObject(inp: Input) {
+    let r = yield* inp.eat();
     if (r.char !== "{") throw new JsonParsingError();
-    if (r.yield) yield {};
+    if (r.chunkEnd) yield {};
 
     let object: Record<string, unknown> = {};
     yield* skipWs(inp, () => object);
-    r = await inp("peek");
+    r = yield* inp.peek();
     if (r.char === "}") {
-        await inp("eat");
-        if (r.yield) yield object;
+        yield* inp.eat();
+        if (r.chunkEnd) yield object;
         return object;
     }
 
     while (true) {
-        const key = yield* gmap(parseString(inp), _ => object);
+        const key = yield* gmap(parseString(inp), () => object);
         yield* skipWs(inp, () => object);
 
-        if ((await inp("eat")).char !== ":") throw new JsonParsingError();
-        // NOTE: if we here reach a yield point, would it make sense to yield with the value set to
-        // undefined?
+        r = yield* inp.eat();
+        if (r.char !== ":") throw new JsonParsingError();
+        if (r.chunkEnd) yield object;
         yield* skipWs(inp, () => object);
 
         const value = yield* gmap(
@@ -242,33 +297,36 @@ async function* parseObject(inp: Input) {
             { value, writable: true, enumerable: true, configurable: true },
         );
 
-        const r = await inp("peek");
+        r = yield* inp.peek();
         if (r.char === "}") {
-            await inp("eat");
-            if (r.yield) yield object;
+            yield* inp.eat();
+            if (r.chunkEnd) yield object;
             return object;
         }
         if (r.char !== ",") throw new JsonParsingError();
-        if ((await inp("eat")).yield) yield object;
+        yield* inp.eat();
+        if (r.chunkEnd) yield object;
         yield* skipWs(inp, () => object);
     }
 }
 
-async function* parseNumber(inp: Input) {
+function* parseNumber(inp: Input) {
     let numStr = "";
 
-    if ((await inp("peek")).char === "-") {
+    let r = yield* inp.peek();
+    if (r.char === "-") {
         numStr += "-";
-        if ((await inp("eat")).yield) yield 0;
+        yield* inp.eat();
+        if (r.chunkEnd) yield 0;
     }
 
     let foundDigit = false;
     while (true) {
-        const r = await inp("peek");
+        r = yield* inp.peek();
         if (r.char < "0" || r.char > "9") break;
         numStr += r.char;
-        if (r.yield) yield Number(numStr);
-        await inp("eat");
+        if (r.chunkEnd) yield Number(numStr);
+        yield* inp.eat();
         foundDigit = true;
     }
     if (!foundDigit) throw new JsonParsingError();
@@ -277,45 +335,45 @@ async function* parseNumber(inp: Input) {
     const intStart = numStr[0] === "-" ? 1 : 0;
     if (numStr.length - intStart > 1 && numStr[intStart] === "0") throw new JsonParsingError();
 
-    let r = await inp("peek");
+    r = yield* inp.peek();
     if (r.char === ".") {
-        if (r.yield) yield Number(numStr);
+        if (r.chunkEnd) yield Number(numStr);
         numStr += ".";
-        await inp("eat");
+        yield* inp.eat();
 
         let foundDigit = false;
         while (true) {
-            const r = await inp("peek");
+            r = yield* inp.peek();
             if (r.char < "0" || r.char > "9") break;
             numStr += r.char;
-            if (r.yield) yield Number(numStr);
-            await inp("eat");
+            if (r.chunkEnd) yield Number(numStr);
+            yield* inp.eat();
             foundDigit = true;
         }
         if (!foundDigit) throw new JsonParsingError();
     }
 
-    r = await inp("peek");
+    r = yield* inp.peek();
     if (["e", "E"].includes(r.char)) {
-        if (r.yield) yield Number(numStr);
+        if (r.chunkEnd) yield Number(numStr);
         const numWithoutExp = numStr;
         numStr += r.char;
-        await inp("eat");
+        yield* inp.eat();
 
-        r = await inp("peek");
+        r = yield* inp.peek();
         if (["-", "+"].includes(r.char)) {
-            if (r.yield) yield Number(numWithoutExp);
+            if (r.chunkEnd) yield Number(numWithoutExp);
             numStr += r.char;
-            await inp("eat");
+            yield* inp.eat();
         }
 
         let foundDigit = false;
         while (true) {
-            r = await inp("peek");
+            r = yield* inp.peek();
             if (r.char < "0" || r.char > "9") break;
             numStr += r.char;
-            if (r.yield) yield Number(numStr);
-            await inp("eat");
+            if (r.chunkEnd) yield Number(numStr);
+            yield* inp.eat();
             foundDigit = true;
         }
         if (!foundDigit) throw new JsonParsingError();
