@@ -62,21 +62,14 @@ async function* skipWs<T>(inp: Input, toYield: () => T) {
 async function* parse(inp: Input): AsyncGenerator<unknown, unknown> {
     const r = await inp("peek");
     switch (r.char) {
-        case "n":
-            return yield* parseLiteral(inp, "null", null);
-        case "t":
-            return yield* parseLiteral(inp, "true", true);
-        case "f":
-            return yield* parseLiteral(inp, "false", false);
-        case "[":
-            return yield* parseArray(inp);
-        case '"':
-            return yield* parseString(inp);
-        case '{':
-            return yield* parseObject(inp);
+        case "n": return yield* parseLiteral(inp, "null", null);
+        case "t": return yield* parseLiteral(inp, "true", true);
+        case "f": return yield* parseLiteral(inp, "false", false);
+        case "[": return yield* parseArray(inp);
+        case '"': return yield* parseString(inp);
+        case '{': return yield* parseObject(inp);
         default:
-            if ("0" <= r.char && r.char <= "9" || r.char == "-")
-                return yield* parseNumber(inp);
+            if ("0" <= r.char && r.char <= "9" || r.char == "-") return yield* parseNumber(inp);
     }
     throw new JsonParsingError();
 }
