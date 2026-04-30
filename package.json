@@ -1,10 +1,9 @@
 {
-  "name": "streamingjson",
+  "name": "@foodelevator/streamingjson",
+  "version": "0.1.0",
   "module": "index.ts",
   "type": "module",
-  "exports": {
-    ".": "./exports.ts"
-  },
+  "exports": "./exports.ts",
   "devDependencies": {
     "@types/bun": "latest",
     "fast-check": "^4.6.0",
