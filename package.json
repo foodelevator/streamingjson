@@ -1,6 +1,6 @@
 {
   "name": "@foodelevator/streamingjson",
-  "version": "0.1.0",
+  "description": "Incremental JSON parser that emits partial values as chunks arrive",
   "module": "index.ts",
   "type": "module",
   "exports": "./exports.ts",

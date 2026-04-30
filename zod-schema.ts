@@ -25,6 +25,12 @@ export type ZStreaming<T extends z.ZodType> =
         } & [z.ZodType, z.ZodType, ...z.ZodType[]]>
     : T; // string, number, boolean, null, etc. pass through unchanged
 
+/**
+ * Builds a Zod schema for partial parsed values.
+ *
+ * Nested values may recursively be partial, objects may omit properties, string
+ * enums/literals allow partial strings, number literals allow any number.
+ */
 export function zStreaming<T extends z.ZodType>(schema: T): ZStreaming<T> {
     if (schema instanceof z.ZodObject) {
         const shape = schema.shape as Record<string, z.ZodType>;

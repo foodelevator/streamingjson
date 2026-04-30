@@ -5,7 +5,7 @@ Streaming JSON parser that produces partial values as chunks arrive.
 - `makeParser` initializes a `JsonParser` instance.
 - `JsonParser.feed` appends a JSON chunk to the parser & returns the current partial value.
 - `JsonParser.value` returns a reference to the current value.
-- `JsonParser.end` finalizes the parser, making sure that it is at the end of a JSON value.
+- `JsonParser.end` marks the input as complete, making sure that it is at the end of a JSON value.
 - `zStreaming` wraps a Zod schema so it accepts partial values.
 
 ## Example Usage

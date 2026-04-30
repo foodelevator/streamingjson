@@ -1,3 +1,7 @@
+/**
+ * Error thrown when the streamed input is not valid JSON, is incomplete when
+ * marked complete, or when a closed parser is used again.
+ */
 export class JsonParsingError extends Error { }
 
 const NEED_MORE = Symbol("need more");
@@ -5,12 +9,41 @@ type NeedMore = typeof NEED_MORE;
 
 type Char = { char: string, eof: boolean, chunkEnd: boolean };
 
+/**
+ * Incremental JSON parser that accepts chunks of a single JSON document and
+ * exposes the best partial value available after each chunk.
+ */
 export type JsonParser = {
+    /**
+     * Returns the latest partial or complete parsed value without consuming input.
+     *
+     * Returns `undefined` until enough input has arrived to produce a value.
+     */
     value(): unknown;
+
+    /**
+     * Appends a chunk of JSON text and returns the latest partial or complete value.
+     *
+     * @throws {JsonParsingError} If the accumulated input is invalid JSON or the
+     * parser has already been closed.
+     */
     feed(chunk: string): unknown;
+
+    /**
+     * Marks the input as complete and returns the complete parsed value.
+     *
+     * @throws {JsonParsingError} If the document is incomplete, invalid, or the
+     * parser has already been closed.
+     */
     end(): unknown;
 };
 
+/**
+ * Creates a parser for one streamed JSON document.
+ *
+ * Feed chunks with {@link JsonParser.feed}; optionally call {@link JsonParser.end}
+ * when no more chunks will arrive to validate and retrieve the complete value.
+ */
 export function makeParser(): JsonParser {
     const input = new Input();
     const parser = parseDocument(input);
