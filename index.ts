@@ -2,12 +2,12 @@
  * Error thrown when the streamed input is not valid JSON, is incomplete when
  * marked complete, or when a closed parser is used again.
  */
-export class JsonParsingError extends Error { }
+export class JsonParsingError extends Error {}
 
 const NEED_MORE = Symbol("need more");
 type NeedMore = typeof NEED_MORE;
 
-type Char = { char: string, eof: boolean, chunkEnd: boolean };
+type Char = { char: string; eof: boolean; chunkEnd: boolean };
 
 /**
  * Incremental JSON parser that accepts chunks of a single JSON document and
@@ -79,7 +79,7 @@ export function makeParser(): JsonParser {
     }
 
     return {
-        value() { return value; },
+        value: () => value,
         feed(chunk: string) {
             checkOpen();
             input.buffer += chunk;
@@ -106,7 +106,11 @@ class Input {
             if (this.ended) return { char: "", eof: true, chunkEnd: true };
             yield NEED_MORE;
         }
-        return { char: this.buffer[this.index]!, eof: false, chunkEnd: this.index == this.buffer.length - 1 };
+        return {
+            char: this.buffer[this.index]!,
+            eof: false,
+            chunkEnd: this.index == this.buffer.length - 1,
+        };
     }
 
     *eat(): Generator<NeedMore, Char> {
@@ -119,7 +123,10 @@ class Input {
     }
 }
 
-function* gmap<A, B, R>(g: Generator<A | NeedMore, R>, f: (value: A) => B): Generator<B | NeedMore, R> {
+function* gmap<A, B, R>(
+    g: Generator<A | NeedMore, R>,
+    f: (value: A) => B,
+): Generator<B | NeedMore, R> {
     while (true) {
         const next = g.next();
         if (next.done) return next.value;
@@ -159,7 +166,8 @@ function* parse(inp: Input): Generator<unknown> {
         case '"': return yield* parseString(inp);
         case "{": return yield* parseObject(inp);
         default:
-            if ("0" <= r.char && r.char <= "9" || r.char == "-") return yield* parseNumber(inp);
+            if ("0" <= r.char && r.char <= "9" || r.char == "-")
+                return yield* parseNumber(inp);
     }
     throw new JsonParsingError();
 }
@@ -188,7 +196,7 @@ function* parseArray(inp: Input) {
     }
 
     while (true) {
-        const element = yield* gmap(parse(inp), el => [...result, el]);
+        const element = yield* gmap(parse(inp), (el) => [...result, el]);
         result = [...result, element];
         yield* skipWs(inp, () => result);
 
@@ -226,11 +234,11 @@ const basicEscapes: Record<string, string> = {
     '"': '"',
     "\\": "\\",
     "/": "/",
-    "b": "\b",
-    "f": "\f",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
+    b: "\b",
+    f: "\f",
+    n: "\n",
+    r: "\r",
+    t: "\t",
 };
 
 /**
@@ -245,7 +253,7 @@ function* parseEscape(inp: Input): Generator<string | NeedMore | undefined> {
     if (r.char !== "u") throw new JsonParsingError();
 
     const hex = yield* parseHex4(inp);
-    if (!(0xD800 <= hex && hex < 0xDC00)) return String.fromCharCode(hex);
+    if (!(0xd800 <= hex && hex < 0xdc00)) return String.fromCharCode(hex);
 
     r = yield* inp.peek();
     if (r.chunkEnd) yield;
@@ -259,8 +267,10 @@ function* parseEscape(inp: Input): Generator<string | NeedMore | undefined> {
     }
     yield* inp.eat();
     const low = yield* parseHex4(inp);
-    if (0xDC00 <= low && low < 0xE000)
-        return String.fromCodePoint(0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00));
+    if (0xdc00 <= low && low < 0xe000)
+        return String.fromCodePoint(
+            0x10000 + ((hex - 0xd800) << 10) + (low - 0xdc00),
+        );
     return String.fromCharCode(hex) + String.fromCharCode(low);
 }
 
@@ -314,21 +324,22 @@ function* parseObject(inp: Input) {
         if (r.chunkEnd) yield object;
         yield* skipWs(inp, () => object);
 
-        const value = yield* gmap(
-            parse(inp),
-            value => Object.defineProperty(
-                { ...object },
-                key,
-                { value, writable: true, enumerable: true, configurable: true },
-            ),
+        const value = yield* gmap(parse(inp), (value) =>
+            Object.defineProperty({ ...object }, key, {
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            }),
         );
         yield* skipWs(inp, () => object);
 
-        object = Object.defineProperty(
-            { ...object },
-            key,
-            { value, writable: true, enumerable: true, configurable: true },
-        );
+        object = Object.defineProperty({ ...object }, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
 
         r = yield* inp.peek();
         if (r.char === "}") {
@@ -366,7 +377,8 @@ function* parseNumber(inp: Input) {
 
     // Disallow leading zeros for non-zero numbers
     const intStart = numStr[0] === "-" ? 1 : 0;
-    if (numStr.length - intStart > 1 && numStr[intStart] === "0") throw new JsonParsingError();
+    if (numStr.length - intStart > 1 && numStr[intStart] === "0")
+        throw new JsonParsingError();
 
     r = yield* inp.peek();
     if (r.char === ".") {
